@@ -7,12 +7,14 @@ from typing import Dict, List, Tuple, Optional
 class Record:
     type: str # prompt/llm_gen/search_results/webpage
     text: str
+    token_ids: List[int]
     # for webpage and search results
     short_text: str = ""
     # RL data
     input_len: Optional[int] = None
     input_tokens: Optional[List[int]] = None
     output_len: Optional[int] = None
+    full_token_ids: Optional[List[int]] = None
     output_tokens: Optional[List[int]] = None
     output_logprobs: Optional[List[float]] = None
     output_versions: Optional[List[int]] = None
@@ -21,8 +23,8 @@ class Record:
         return asdict(self)
 
 class AgentMemory:
-    def __init__(self, prompt):
-        self.memory = [Record(type="prompt", text=prompt)]
+    def __init__(self, prompt, prompt_token_ids):
+        self.memory = [Record(type="prompt", text=prompt, token_ids=prompt_token_ids)]
     
     def llm_gen_count(self):
         return sum([r.type == "llm_gen" for r in self.memory])
@@ -43,6 +45,12 @@ class AgentMemory:
                 raise RuntimeError(f"Unknown record type: {r.type}")
         return prompt
     
+    def prepare_prompt_token_ids(self):
+        prompt_token_ids = []
+        for r in self.memory:
+            prompt_token_ids += r.token_ids
+        return prompt_token_ids
+
     def add_record(self, r: Record):
         self.memory.append(r)
     
@@ -67,9 +75,9 @@ class AgentMemory:
         return [r.to_dict() for r in self.memory]
 
 class SearchAgent:
-    def __init__(self, prompt):
+    def __init__(self, prompt, prompt_token_ids):
         self.prompt = prompt
-        self.memory = AgentMemory(prompt=prompt)
+        self.memory = AgentMemory(prompt=prompt, prompt_token_ids=prompt_token_ids)
         self.summary_job_queue = queue.Queue(128)
     
     @property
@@ -88,26 +96,32 @@ class SearchAgent:
             assert (summary_job.get("type", "unkown") in ["search_results", "webpage"]), ("Unknown summary_job type: " + summary_job.get("type", "unknown"))
             self.summary_job_queue.put_nowait(summary_job)
     
-    def prepare_llm_query(self):
-        prompt = self.memory.prepare_prompt()
+    def prepare_llm_query(self, tokenizer):
+        prompt_token_ids = self.memory.prepare_prompt_token_ids()
         sampling_params = dict(stop=["</search>", "</access>", "</answer>"])
         if not self.summary_job_queue.empty():
             summary_job = self.summary_job_queue.get_nowait()
             if summary_job["type"] in ["search_results", "webpage"]:
-                prompt = prompt + "\n\n" + summary_job["text"] + "\n<think>\n"
+                full_text = "\n\n" + summary_job["text"] + "\n<think>\n"
+                short_text = "\n\n" + summary_job.get("short_text", summary_job["text"]) + "\n<think>\n"
+                full_token_ids, short_token_ids = tokenizer([full_text, short_text], add_special_tokens=False)["input_ids"]
                 new_record = Record(
                     type=summary_job["type"], 
-                    text=summary_job["text"], 
-                    short_text=summary_job.get("short_text", summary_job["text"]),
+                    text=full_text, 
+                    short_text=short_text,
+                    token_ids=short_token_ids,
+                    full_token_ids=full_token_ids,
                 )
+                prompt_token_ids += full_token_ids
                 self.memory.add_record(new_record)
                 sampling_params["stop"] = ["</think>"]
-        return prompt, sampling_params
+        return prompt_token_ids, sampling_params
     
     def consume_llm_response(self, resp, completion_text):
         new_record = Record(
             type="llm_gen",
             text=completion_text,
+            token_ids=resp.output_tokens,
             input_len=resp.input_len,
             input_tokens=resp.input_tokens,
             output_len=resp.output_len,
@@ -165,7 +179,7 @@ class SearchAgent:
             self.add_summary_jobs(summary_jobs)
 
     def get_answer(self):
-        text, _ = self.prepare_llm_query()
+        text = self.memory.prepare_prompt()
         pattern = r'<answer>(.*?)</answer>'
         matches = re.findall(pattern, text, re.DOTALL)
         if matches:

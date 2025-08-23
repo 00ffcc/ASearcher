@@ -12,8 +12,9 @@ from datasets.distributed import split_dataset_by_node
 from tensordict import TensorDict
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizerFast
-
 from dataclasses import dataclass, field
+
+import hashlib
 
 from areal.api.cli_args import (
     GenerationHyperparameters,
@@ -45,6 +46,11 @@ worker_id = uuid.uuid4().hex[:4]
 
 logger = logging.getLogger(f"ASearcher @ {worker_id}")
 
+def hash(numbers):
+    """Hash an entire list of integers as a single string"""
+    # Convert list to string representation
+    list_str = json.dumps(numbers, sort_keys=True)  # sort_keys for consistency
+    return hashlib.sha256(list_str.encode()).hexdigest()
 
 
 class ASearcherWorkflow(RolloutWorkflow):
@@ -82,18 +88,17 @@ class ASearcherWorkflow(RolloutWorkflow):
 
         self.toolbox = SearchToolBox(dataset_path=dataset_path, reward_type=self.reward_type, topk=self.topk, search_client_type=self.search_client_type)
     
-    async def collect_agent_trajectory(self, valid_inst, qid, prompt, engine):
-        agent = SearchAgent(prompt)
+    async def collect_agent_trajectory(self, valid_inst, qid, prompt, prompt_token_ids, engine):
+        agent = SearchAgent(prompt, prompt_token_ids)
         score = 0
         ground_truth = None
         # a unique trajectory rid to ensure all requests goes to the same sglang server
         traj_rid = uuid.uuid4().hex
         while agent.num_turns < self.max_turns and not agent.is_finished:
             # The agent prepares the prompt and sampling params for LLM generation
-            query_prompt, sampling_params = agent.prepare_llm_query()
+            input_ids, sampling_params = agent.prepare_llm_query(self.tokenizer)
 
             # Send request to inference engine and get response
-            input_ids = self.tokenizer.encode(query_prompt, add_special_tokens=False)
             req = LLMRequest(
                 rid=traj_rid,
                 input_ids=input_ids,
@@ -169,9 +174,10 @@ class ASearcherWorkflow(RolloutWorkflow):
         valid_inst: bool = np.random.uniform(0, 1) <= self.valid_inst_ratio
         if valid_inst:
             prompt = prompt.replace(INVALID_PROMPT, VALID_PROMPT)
+        prompt_token_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
 
         # Collect trajectories 
-        trajs = await asyncio.gather(*[self.collect_agent_trajectory(valid_inst, qid, prompt, engine) for _ in range(self.n_trajs)])
+        trajs = await asyncio.gather(*[self.collect_agent_trajectory(valid_inst, qid, prompt, prompt_token_ids, engine) for _ in range(self.n_trajs)])
 
         ground_truth, scores, results, stats = None, [], [], []
         for gt, score, traj, traj_stats in trajs:
@@ -189,33 +195,54 @@ class ASearcherWorkflow(RolloutWorkflow):
 
         trajs = [traj for _, _, traj, _ in trajs]
         for i, traj_memory in enumerate(trajs):
-            traj_stats = stats.pop(0)
-            first_llm_gen = True
+            seqs = []
             for j, record in enumerate(traj_memory.memory):
                 if record.type != "llm_gen":
                     continue
-                seq = record.input_tokens + record.output_tokens
-                logprobs = [0.0] * record.input_len + record.output_logprobs
-                loss_mask = [0] * record.input_len + [1] * record.output_len
-                versions = [-1] * record.input_len + record.output_versions
 
+                # Check whether any previous seq is equivalent to input tokens
+                success = False
+                for seq in seqs:
+                    if record.input_len  < len(seq["input_ids"]):
+                        continue
+                    h_cur = hash(record.input_tokens[:len(seq["input_ids"])])
+                    h_seq = hash(seq["input_ids"])
+                    if h_cur == h_seq:
+                        seq_len = len(seq["input_ids"])
+                        seq["input_ids"] = record.input_tokens + record.output_tokens
+                        seq["logprobs"] += [0.0] * (record.input_len - seq_len) + record.output_logprobs
+                        seq["loss_mask"] += [0] * (record.input_len - seq_len) + [1] * record.output_len
+                        seq["versions"] += [-1] * (record.input_len - seq_len) + record.output_versions
+                        success = True
+                        break
+                if not success:
+                    seq = dict(
+                        input_ids = record.input_tokens + record.output_tokens,
+                        logprobs = [0.0] * record.input_len + record.output_logprobs,
+                        loss_mask = [0] * record.input_len + [1] * record.output_len,
+                        versions = [-1] * record.input_len + record.output_versions,
+                    )
+                    seqs.append(seq)
+
+            traj_stats = stats.pop(0)
+            first_llm_gen = True
+        
+            for seq in seqs:
                 res = dict(
                     # unsqueeze to add an additional batch dimension
-                    input_ids=torch.tensor(seq).unsqueeze(0),
-                    loss_mask=torch.tensor(loss_mask).unsqueeze(0),
-                    logprobs=torch.tensor(logprobs).unsqueeze(0),
-                    versions=torch.tensor(versions).unsqueeze(0),
-                    attention_mask=torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
+                    input_ids=torch.tensor(seq["input_ids"]).unsqueeze(0),
+                    loss_mask=torch.tensor(seq["loss_mask"]).unsqueeze(0),
+                    logprobs=torch.tensor(seq["logprobs"]).unsqueeze(0),
+                    versions=torch.tensor(seq["versions"]).unsqueeze(0),
+                    attention_mask=torch.ones(len(seq["input_ids"]), dtype=torch.bool).unsqueeze(0),
                     # reward
                     rewards=torch.tensor([float(scores[i])]),
                 )
-                if first_llm_gen:
-                    res.update(dict(begin_of_trajectory=torch.tensor([1.0]),))
-                    res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
-                    first_llm_gen = False
-                else:
-                    res.update(dict(begin_of_trajectory=torch.tensor([0.0]),))
-                    res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
+
+                res.update(dict(begin_of_trajectory=torch.tensor([int(first_llm_gen)]),))
+                res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
+                first_llm_gen = False
+
                 results.append(TensorDict(res, batch_size=[1]))
 
         if self.dump_dir is not None:

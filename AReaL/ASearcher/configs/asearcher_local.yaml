@@ -18,7 +18,7 @@ async_training: true
 rollout:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 128
+  max_concurrent_rollouts: 24
   queue_size: null
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 4
@@ -34,7 +34,7 @@ gconfig:
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen__Qwen2.5-7B
+  path: Qwen/Qwen2.5-7B
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
