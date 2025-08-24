@@ -114,7 +114,7 @@ class ASearcherWorkflow(RolloutWorkflow):
                 tool_call = tool_calls[0]
                 res = (await self.toolbox.step((qid, [tool_call])))[0]
                 
-                agent.consume_tool_response(res, topk=self.topk)
+                agent.consume_tool_response(res)
 
             if resp.output_tokens[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
                 break
@@ -139,9 +139,10 @@ class ASearcherWorkflow(RolloutWorkflow):
         # use BytedTsinghua-SIA/DAPO-Math-17k
         # 格式为 raw_prompt="Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.\n\n{question}\n\nRemember to put your answer on its own line after \"Answer:\".", 提取question
         raw_prompt = data["prompt"][0]["content"]
-        pattern = "Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.\n\n(.*?)\n\nRemember to put your answer on its own line after \"Answer:\"."
-        question = re.findall(pattern, raw_prompt)[0]
-
+        try:
+            question = "\n\n".join(raw_prompt.split("\n\n")[1:-1])
+        except:
+            print(f"{raw_prompt=} {data=}")
         ground_truth = data["reward_model"]["ground_truth"]
 
         # Get the unique identifier for this prompt
@@ -248,9 +249,8 @@ class AgentRLConfig(GRPOConfig):
 
 def get_search_dataset(dataset_path, tokenizer, rank, world_size):
     dataset = load_dataset(
-        path="json",
+        dataset_path,
         split="train",
-        data_files=dataset_path,
     )
     # dataset = dataset.filter(lambda x: len(tokenizer.encode(x["question"])) <= 1024)
     return split_dataset_by_node(dataset, rank=rank, world_size=world_size)

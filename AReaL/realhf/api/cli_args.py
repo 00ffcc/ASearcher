@@ -387,7 +387,7 @@ class SGLangConfig:
                 continue
             flags.append(f"--{k.replace('_','-')} {v}")
         flags = " ".join(flags)
-        return f"/usr/bin/python3 -m sglang.launch_server {flags}"
+        return f"python -m sglang.launch_server {flags}"
 
 
 @dataclass

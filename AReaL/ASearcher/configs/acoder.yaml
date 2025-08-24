@@ -1,13 +1,13 @@
-experiment_name: asearcher-7b-zero-web
+experiment_name: acoder-zero
 trial_name: run1
 
 cluster:
-  fileroot: /tmp/areal/experiments
+  fileroot: /apdcephfs_sh7/share_300819555/hunyuan_infer/zhiyugui/myagent/experiments
   n_nodes: 1
   n_gpus_per_node: 8
   name_resolve:
     type: nfs
-    nfs_record_root: /tmp/areal/name_resolve
+    nfs_record_root: /apdcephfs_sh7/share_300819555/hunyuan_infer/zhiyugui/myagent/name_resolve
 seed: 1
 total_train_epochs: 10
 total_train_steps: null
@@ -34,7 +34,7 @@ gconfig:
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen__Qwen2.5-7B
+  path: Qwen/Qwen2.5-3B
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -69,14 +69,7 @@ actor:
     - num_input_tokens
     - num_output_tokens
     - num_llm_gens
-    - num_search_queries
-    - num_success_search_queries
-    - num_failed_search_queries
-    - num_pages
-    - num_success_url_accesses
-    - num_failed_url_accesses
     - score
-    - judge_q_invalid
     - format_reward
 
 ref:
@@ -108,7 +101,7 @@ train_dataset:
   batch_size: 128
   shuffle: true
   pin_memory: true
-  path: path_to_training_data
+  path: BytedTsinghua-SIA/DAPO-Math-17k
 
 # Utilities
 saver:
@@ -148,7 +141,6 @@ launcher:
   inference_server_mem_per_gpu: 153600
   trainer_cpus_per_gpu: 15
   trainer_mem_per_gpu: 153600
-  slurm:
 
 
 max_turns: 32

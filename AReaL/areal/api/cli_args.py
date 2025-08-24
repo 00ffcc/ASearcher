@@ -405,7 +405,7 @@ class SGLangConfig:
                 flags.append(f"--{k.replace('_','-')} {' '.join(map(str, v))}")
             else:
                 flags.append(f"--{k.replace('_','-')} {v}")
-        return f"/usr/bin/python3 -m sglang.launch_server {' '.join(flags)}"
+        return f"python -m sglang.launch_server {' '.join(flags)}"
 
     @staticmethod
     def build_args(
