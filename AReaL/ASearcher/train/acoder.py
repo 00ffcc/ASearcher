@@ -91,7 +91,7 @@ class ASearcherWorkflow(RolloutWorkflow):
         while agent.num_turns < self.max_turns and not agent.is_finished:
             # The agent prepares the prompt and sampling params for LLM generation
             query_prompt, sampling_params = agent.prepare_llm_query()
-
+            
             # Send request to inference engine and get response
             input_ids = self.tokenizer.encode(query_prompt, add_special_tokens=False)
             req = LLMRequest(
@@ -108,7 +108,7 @@ class ASearcherWorkflow(RolloutWorkflow):
 
             # agent extracts tool callings from the llm response
             tool_calls = agent.consume_llm_response(resp, completion_str)
-
+            logger.info(f"{query_prompt=} {sampling_params=} {completion_str=} {tool_calls=}")
             # call tool and compute reward
             if tool_calls is not None and len(tool_calls) > 0:
                 tool_call = tool_calls[0]
@@ -146,12 +146,7 @@ class ASearcherWorkflow(RolloutWorkflow):
         ground_truth = data["reward_model"]["ground_truth"]
 
         # Get the unique identifier for this prompt
-        qid = None
-        for key in ["query_id", "id", "qid"]:
-            qid = data.get(key, None)
-            if qid is not None:
-                break
-        qid = str(qid) or uuid.uuid4().hex
+        qid = uuid.uuid4().hex
 
         # check for generated qid when resuming
         if self.dump_dir is not None:
@@ -164,11 +159,8 @@ class ASearcherWorkflow(RolloutWorkflow):
         # Initialize and Prepare the prompt
         version = engine.get_version()
         
-        prompt = f"A conversation between User and Assistant. The user asks a question, and the Assistant answers it. The Assistant analyzes the given question and information in the mind, retains important relevant information, and provides the user with the answer. The Assistant can use Python tools by enclosing code within <python> python code </python>, and the execution results will be returned within <exec_results> result </exec_results>. The allowed libraries for Python code are: torch, sympy, numpy, scipy, pandas. The reasoning processes are enclosed within <think> </think>. Finally, the Assistant provides answer inside <answer> and </answer>, i.e. <answer> answer here </answer>. If there are multiple queries, ensure all answers are enclosed within <answer> </answer>, separated with comma. Note that when the Assistant finds the question is invalid, e.g. no answer could match all information in the question, the Assistant replies with '<answer> the question is invalid. </answer>'. \n\nUser: \n\n{question}. \n\nThe language of your answer should align with the question. \n\nAssistant: \n<think>\n"
-
-        # Collect trajectories 
+        prompt = f"A conversation between User and Assistant. The user asks a question, and the Assistant answers it. The Assistant analyzes the given question and information in the mind, retains important relevant information, and provides the user with the answer. The Assistant can use Python tools by enclosing code within <python> python code </python>, and the execution results will be returned within <exec_results> result </exec_results>. Please pay attention to code indentation. The allowed libraries for Python code are: torch, sympy, numpy, scipy, pandas. The reasoning processes are enclosed within <think> </think>. Finally, the Assistant provides answer inside <answer> </answer>. Only a single integer should be included in <answer> </answer>, do not include anything else. \n\nUser: \n\n{question}. \n\nThe language of your answer should align with the question. \n\nAssistant: \n<think>\n"
         trajs = await asyncio.gather(*[self.collect_agent_trajectory(qid, prompt, ground_truth, engine) for _ in range(self.n_trajs)])
-
         scores, results, stats = [], [], []
         for gt, score, traj, traj_stats in trajs:
             scores.append(score)

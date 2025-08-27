@@ -26,7 +26,7 @@ class CodeToolBox:
                     async with session.post(url, json={
                     "code": code,
                     "language": "python"
-                }, timeout=30) as response:
+                }, timeout=90) as response:
                         response = await response.json()
                 
                 result["type"] = "python"

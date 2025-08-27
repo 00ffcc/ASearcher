@@ -123,7 +123,7 @@ class CodeAgent:
 
             stdout = res["response"]["run_result"]["stdout"]
             stderr = res["response"]["run_result"]["stderr"]
-            status = res["response"]["status"]
+            status = res["response"]["run_result"]["status"]
             summary_job["text"] = f"<exec_results>\nStatus: {status}\nStdout:\n{stdout}\nStderr:\n{stderr}\n</exec_results>"
             self.add_summary_jobs(summary_job)
 

@@ -208,15 +208,15 @@ class WorkflowExecutor:
                 if result is not None and (should_accept is None or should_accept(result)):
                     self.result_cache.append(result)
                     accepted += 1
-                    logger.info(f"new result. accepted/count = {accepted}/{count}")
+                    #logger.info(f"new result. accepted/count = {accepted}/{count}")
                 else:
                     with self.lock:
-                        logger.info(
-                                f"One traj is not accepted "
-                                f"Submit: {self.rollout_stat.submitted}, "
-                                f"running: {self.rollout_stat.running}, "
-                                f"accepted: {self.rollout_stat.accepted}."
-                            )
+                        #logger.info(
+                        #        f"One traj is not accepted "
+                        #        f"Submit: {self.rollout_stat.submitted}, "
+                        #        f"running: {self.rollout_stat.running}, "
+                        #        f"accepted: {self.rollout_stat.accepted}."
+                        #    )
                         self.rollout_stat.accepted -= 1
             except queue.Empty:
                 pass
