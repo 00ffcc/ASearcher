@@ -36,12 +36,25 @@ class AgentMemory:
             if r.type == "prompt":
                 prompt = r.text
             elif r.type in ["exec_results"]:
-                prompt = prompt + "\n\n" + r.short_text + "\n<think>\n"
+                prompt = prompt + r.short_text
             elif r.type == "llm_gen":
                 prompt = prompt + r.text
             else:
                 raise RuntimeError(f"Unknown record type: {r.type}")
         return prompt
+    
+    def prepare_prompt_token_ids(self, tokenizer):
+        token_ids = []
+        for r in self.memory:
+            if r.type == "prompt":
+                token_ids += tokenizer.encode(r.text, add_special_tokens=False)
+            elif r.type in ["exec_results"]:
+                token_ids += tokenizer.encode(r.short_text, add_special_tokens=False)
+            elif r.type == "llm_gen":
+                token_ids += r.output_tokens
+            else:
+                raise RuntimeError(f"Unknown record type: {r.type}")
+        return token_ids
     
     def add_record(self, r: Record):
         self.memory.append(r)
@@ -85,11 +98,11 @@ class CodeAgent:
         if not self.summary_job_queue.empty():
             summary_job = self.summary_job_queue.get_nowait()
             if summary_job["type"] in ["exec_results"]:
-                prompt = prompt + "\n\n" + summary_job["text"] + "\n<think>\n"
+                prompt = prompt + f"\n\n{summary_job['text']}\n<think>\n"
                 new_record = Record(
                     type=summary_job["type"], 
-                    text=summary_job["text"], 
-                    short_text=summary_job.get("short_text", summary_job["text"]),
+                    text=f"\n\n{summary_job['text']}\n<think>\n", 
+                    short_text=f"\n\n{summary_job['text']}\n<think>\n",
                 )
                 self.memory.add_record(new_record)
                 sampling_params["stop"] = ["</think>"]

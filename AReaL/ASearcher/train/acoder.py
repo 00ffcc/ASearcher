@@ -93,7 +93,10 @@ class ASearcherWorkflow(RolloutWorkflow):
             query_prompt, sampling_params = agent.prepare_llm_query()
             
             # Send request to inference engine and get response
-            input_ids = self.tokenizer.encode(query_prompt, add_special_tokens=False)
+            # input_ids = self.tokenizer.encode(query_prompt, add_special_tokens=False)
+            input_ids = agent.memory.prepare_prompt_token_ids(self.tokenizer)
+            assert self.tokenizer.decode(input_ids) == query_prompt, f"Tokenization mismatch: {self.tokenizer.decode(input_ids)} != {query_prompt}"
+
             req = LLMRequest(
                 rid=traj_rid,
                 input_ids=input_ids,
@@ -108,7 +111,7 @@ class ASearcherWorkflow(RolloutWorkflow):
 
             # agent extracts tool callings from the llm response
             tool_calls = agent.consume_llm_response(resp, completion_str)
-            logger.info(f"{query_prompt=} {sampling_params=} {completion_str=} {tool_calls=}")
+            # logger.info(f"{query_prompt=} {sampling_params=} {completion_str=} {tool_calls=}")
             # call tool and compute reward
             if tool_calls is not None and len(tool_calls) > 0:
                 tool_call = tool_calls[0]
@@ -132,6 +135,8 @@ class ASearcherWorkflow(RolloutWorkflow):
             score=score,
             format_reward=format_reward,
         ))
+
+        logger.info(f"Trajectory finished @ qid={qid}: {ground_truth=} {pred_answer=} {agent.memory.prepare_prompt()=}")
 
         return ground_truth, score, agent.memory, stats       
     
@@ -169,39 +174,59 @@ class ASearcherWorkflow(RolloutWorkflow):
         raw_scores = scores
         score_mean = np.asarray(scores).mean()
         scores = [s-score_mean for s in scores]
-        # logger.info(f"Scores @ qid={qid}: {raw_scores} -> {scores}")
+        logger.info(f"Scores @ qid={qid}: {score_mean=} {raw_scores} -> {scores}")
         if all([s==0 for s in scores]):
             return None
 
         trajs = [traj for _, _, traj, _ in trajs]
         for i, traj_memory in enumerate(trajs):
-            traj_stats = stats.pop(0)
-            first_llm_gen = True
+            seqs = []
             for j, record in enumerate(traj_memory.memory):
                 if record.type != "llm_gen":
                     continue
-                seq = record.input_tokens + record.output_tokens
-                logprobs = [0.0] * record.input_len + record.output_logprobs
-                loss_mask = [0] * record.input_len + [1] * record.output_len
-                versions = [-1] * record.input_len + record.output_versions
 
+                # Check whether any previous seq is equivalent to input tokens
+                success = False
+                for seq in seqs:
+                    if record.input_len  < len(seq["input_ids"]):
+                        continue
+
+                    if record.input_tokens[:len(seq["input_ids"])] == seq["input_ids"]:
+                        seq_len = len(seq["input_ids"])
+                        seq["input_ids"] = record.input_tokens + record.output_tokens
+                        seq["logprobs"] += [0.0] * (record.input_len - seq_len) + record.output_logprobs
+                        seq["loss_mask"] += [0] * (record.input_len - seq_len) + [1] * record.output_len
+                        seq["versions"] += [-1] * (record.input_len - seq_len) + record.output_versions
+                        success = True
+                        break
+                if not success:
+                    seq = dict(
+                        input_ids = record.input_tokens + record.output_tokens,
+                        logprobs = [0.0] * record.input_len + record.output_logprobs,
+                        loss_mask = [0] * record.input_len + [1] * record.output_len,
+                        versions = [-1] * record.input_len + record.output_versions,
+                    )
+                    seqs.append(seq)
+
+            traj_stats = stats.pop(0)
+            first_llm_gen = True
+        
+            for seq in seqs:
                 res = dict(
                     # unsqueeze to add an additional batch dimension
-                    input_ids=torch.tensor(seq).unsqueeze(0),
-                    loss_mask=torch.tensor(loss_mask).unsqueeze(0),
-                    logprobs=torch.tensor(logprobs).unsqueeze(0),
-                    versions=torch.tensor(versions).unsqueeze(0),
-                    attention_mask=torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
+                    input_ids=torch.tensor(seq["input_ids"]).unsqueeze(0),
+                    loss_mask=torch.tensor(seq["loss_mask"]).unsqueeze(0),
+                    logprobs=torch.tensor(seq["logprobs"]).unsqueeze(0),
+                    versions=torch.tensor(seq["versions"]).unsqueeze(0),
+                    attention_mask=torch.ones(len(seq["input_ids"]), dtype=torch.bool).unsqueeze(0),
                     # reward
                     rewards=torch.tensor([float(scores[i])]),
                 )
-                if first_llm_gen:
-                    res.update(dict(begin_of_trajectory=torch.tensor([1.0]),))
-                    res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
-                    first_llm_gen = False
-                else:
-                    res.update(dict(begin_of_trajectory=torch.tensor([0.0]),))
-                    res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
+
+                res.update(dict(begin_of_trajectory=torch.tensor([int(first_llm_gen)]),))
+                res.update({k: torch.tensor([v]) for k, v in traj_stats.items()})
+                first_llm_gen = False
+
                 results.append(TensorDict(res, batch_size=[1]))
 
         if self.dump_dir is not None:

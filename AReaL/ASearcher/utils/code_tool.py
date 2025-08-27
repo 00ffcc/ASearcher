@@ -15,7 +15,7 @@ class CodeToolBox:
 
         results = []
         for action in actions:
-            result = dict(documents=None, score=None, ground_truth=None, type=None)
+            result = {}
 
             # tool calling
             if "<python>" in action and "</python>" in action:
@@ -34,4 +34,3 @@ class CodeToolBox:
 
             results.append(result)
         return results
-
